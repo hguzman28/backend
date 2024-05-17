@@ -1,0 +1,77 @@
+pipeline {
+    //                                             #### DESCRIPCIÓN GENERAL ####
+    // Este es un servicio tipo API Backend API NET, se va a compilar y ejecuatar pruebas, además la imagen Docker se registra en ECR en AWS, se actualiza la versión
+    // De la imagen en el repositorio, para que ArgoCD haga el CD
+    // Finalmente notificamos a teams el resultado
+
+    // Para que se ejecute este Pipeline, el desarrollador debe enviar un PR al Team Leader o supervisor, cuando este es solicitado se ejecuta 
+	// y genera informes dentro del PR para que el supervisor apruebe o no el cambio al ambiente -dev, qa, prd-
+    agent any
+    
+    // Para este CI, vamos a requerir terraform, previamente debe estar habilitada en "Global Tool Configuration", 
+	// la versión que requiera el proyecto, y siempre usará esa versión.
+    tools {
+        terraform 'terraform1.3.6'
+    }
+    
+    environment {
+        TOKEGUTHUB = credentials('TOKENGIT')
+    }
+    
+    // Aprovicionamos y configuramos la insfraestructura como codigo en AWS
+    stages {
+        stage('Aprovisionar Infra en AWS para Docker') {
+            steps {
+                withEnv(["AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}", "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}", "AWS_DEFAULT_REGION=${env.AWS_DEFAULT_REGION}"]) {
+                    sh 'terraform -chdir=jenkins/IaC/ECR init'
+                    sh 'terraform -chdir=jenkins/IaC/ECR apply -auto-approve'
+                }
+            }
+        }
+        // Compilamos Docker y lo subimos al repositorio habilitado en el stage anterior
+        stage('Build Docker API NET') {
+            steps {
+                withEnv(["AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}", "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}", "AWS_DEFAULT_REGION=${env.AWS_DEFAULT_REGION}"]) {
+                    sh 'aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 11122233444.dkr.ecr.us-east-1.amazonaws.com'
+                    sh 'docker build -t serviciobacked .'
+                    sh "docker tag serviciobacked:latest 11122233444.dkr.ecr.us-east-1.amazonaws.com/serviciobacked:${env.BUILD_NUMBER}"
+                    sh "docker push 11122233444.dkr.ecr.us-east-1.amazonaws.com/serviciobacked:${env.BUILD_NUMBER}"
+                    sh "docker image rm 11122233444.dkr.ecr.us-east-1.amazonaws.com/serviciobacked:${env.BUILD_NUMBER}"
+                    sh "docker system prune -f"
+                }
+            }
+        }
+        // Actualimos el repositorio Git con la nueva versión, que será detectado por el CD ArgoCD
+        stage('Update Manifest Git dev') {
+            steps {
+                script {
+                    sh "sed -i 's+11122233444.dkr.ecr.us-east-1.amazonaws.com/serviciobacked.*+11122233444.dkr.ecr.us-east-1.amazonaws.com/serviciobacked:${env.BUILD_NUMBER}+g' jenkins/dev/Deployment.yaml"
+                    sh 'git config --global user.email "you@example.com"'
+                    sh 'git config --global user.name "Your Name"'
+                    sh 'git add jenkins/dev/Deployment.yaml'
+                    sh "git commit -m 'Change version in Deployment.yaml of EKS by Jenkins, ${env.BUILD_NUMBER}'"
+                    sh "git push https://${env.TOKEGUTHUB}@github.com/JamarRepository/serviciobacked.git HEAD:dev"
+                }
+            }
+        }
+    }
+
+        post {
+
+        // Notificación a teams el resultado, exitoso o fallido
+        success {
+            office365ConnectorSend(
+                webhookUrl: 'https://organizacionPajarito.webhook.office.com/webhookb2/cccc167/JenkinsCI/ccc',
+                message: 'Application deployment successful',
+                status: 'Success'
+            )
+        }
+        failure {
+            office365ConnectorSend(
+                webhookUrl: 'https://organizacionPajarito.webhook.office.com/webhookb2/cccc167/JenkinsCI/ccc',
+                message: 'Application deployment failed',
+                status: 'Failure'
+            )
+        }
+    }
+}
