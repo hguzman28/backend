@@ -18,7 +18,7 @@ pipeline {
         TOKEGUTHUB = credentials('TOKENGIT')
     }
     
-    // Aprovicionamos y configuramos la insfraestructura como codigo en AWS
+    // Aprovicionamos y configuramos la insfraestructura como codigo Terraform, en AWS
     stages {
         stage('Aprovisionar Infra en AWS para Docker') {
             steps {
